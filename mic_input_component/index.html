@@ -171,7 +171,9 @@
 
     mic.addEventListener("click", () => {
       if (listening) { recog.stop(); return; }
-      baseText = input.value ? input.value.trim() + " " : "";
+      // Starting voice input discards any typed text so dictation begins fresh.
+      input.value = "";
+      baseText = "";
       try { recog.start(); } catch (err) { /* ignore double-start */ }
     });
 
