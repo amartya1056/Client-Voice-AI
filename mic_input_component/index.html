@@ -6,7 +6,10 @@
   html, body { margin: 0; padding: 0; }
   body { font-family: "Source Sans Pro", -apple-system, sans-serif; }
 
-  .wrap { position: relative; width: 100%; box-sizing: border-box; }
+  /* Row: the text box (with mic inside) on the left, Next button on the right */
+  .row { display: flex; align-items: stretch; gap: 8px; width: 100%; box-sizing: border-box; }
+
+  .wrap { position: relative; flex: 1; min-width: 0; }
 
   #answer {
     width: 100%;
@@ -22,7 +25,7 @@
   }
   #answer:focus { border-color: #ff4b4b; box-shadow: 0 0 0 1px #ff4b4b; }
 
-  /* Mic button sits inside the right edge of the text box */
+  /* Speak button sits inside the right edge of the text box */
   #mic {
     position: absolute;
     right: 8px;
@@ -51,14 +54,33 @@
     100% { box-shadow: 0 0 0 0 rgba(255, 75, 75, 0); }
   }
 
+  /* Next button to the right of the text box */
+  #next {
+    border: none;
+    border-radius: 0.5rem;
+    background: #ff4b4b;
+    color: #fff;
+    font-size: 0.95rem;
+    font-weight: 600;
+    padding: 0 1.1rem;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.15s, opacity 0.15s;
+  }
+  #next:hover { background: #e63e3e; }
+  #next:disabled { opacity: 0.45; cursor: default; }
+
   .hint { font-size: 0.78rem; color: #808495; margin-top: 5px; min-height: 1rem; }
 </style>
 </head>
 <body>
-  <div class="wrap">
-    <input id="answer" type="text" autocomplete="off"
-           placeholder="Type or click the mic to speak, then press Enter" />
-    <button id="mic" title="Click to speak">&#127908;</button>
+  <div class="row">
+    <div class="wrap">
+      <input id="answer" type="text" autocomplete="off"
+             placeholder="Type or speak, then press Enter or Next" />
+      <button id="mic" title="Click to speak">🗣️</button>
+    </div>
+    <button id="next" title="Submit this answer and go to the next question">Next →</button>
   </div>
   <div class="hint" id="hint"></div>
 
@@ -77,28 +99,57 @@
     setValue:  (v) => send("streamlit:setComponentValue", { value: v, dataType: "json" }),
   };
 
-  const input = document.getElementById("answer");
-  const mic   = document.getElementById("mic");
-  const hint  = document.getElementById("hint");
+  const input   = document.getElementById("answer");
+  const mic     = document.getElementById("mic");
+  const nextBtn = document.getElementById("next");
+  const hint    = document.getElementById("hint");
 
-  let submitCount = 0;   // increments on each Enter so repeat answers still register
+  let submitCount = 0;   // increments on each submit so repeat answers still register
   let usedVoice   = false;
   let speechLang  = "en-US";   // updated from Python via component args
+  let listening   = false;     // hoisted so submit() can stop an active dictation
 
-  // Press Enter -> send the answer to Python (which then submits to the AI).
-  input.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      const text = input.value.trim();
-      if (!text) return;
-      submitCount += 1;
-      Streamlit.setValue({
-        text: text,
-        count: submitCount,
-        method: usedVoice ? "voice" : "typed",
-      });
+  // ---------------------------------------------------------------
+  // Collapse immediately-repeated phrases for a clean live display,
+  // e.g. "my name is my name is Amartya" -> "my name is Amartya".
+  // The final answer is further refined by the AI on the Python side.
+  // ---------------------------------------------------------------
+  function collapseRepeats(text) {
+    let words = text.split(" ").filter(Boolean);
+    for (let n = 6; n >= 1; n--) {
+      const out = [];
+      let i = 0;
+      while (i < words.length) {
+        const a = words.slice(i, i + n).join(" ").toLowerCase();
+        const b = words.slice(i + n, i + 2 * n).join(" ").toLowerCase();
+        if (a && a === b) { i += n; }          // drop this copy, keep the next
+        else { out.push(words[i]); i += 1; }
+      }
+      words = out;
     }
+    return words.join(" ");
+  }
+
+  // Shared submit path used by both Enter and the Next button.
+  function submit() {
+    const text = input.value.trim();
+    if (!text) { hint.textContent = "Please type or speak an answer first."; return; }
+    if (listening && recog) { try { recog.stop(); } catch (err) { /* ignore */ } }
+    submitCount += 1;
+    Streamlit.setValue({
+      text: text,
+      count: submitCount,
+      method: usedVoice ? "voice" : "typed",
+    });
+  }
+
+  // Press Enter -> submit.
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); submit(); }
   });
+
+  // Click Next -> submit.
+  nextBtn.addEventListener("click", submit);
 
   // ---------------------------------------------------------------
   // Live dictation via the browser's Web Speech API (Chrome/Edge).
@@ -116,7 +167,6 @@
     recog.interimResults = true;
     recog.lang = speechLang;
 
-    let listening = false;
     let baseText = "";   // text committed before the current interim chunk
 
     mic.addEventListener("click", () => {
@@ -129,7 +179,7 @@
       listening = true;
       usedVoice = true;
       mic.classList.add("listening");
-      hint.textContent = "Listening… speak now (click mic to stop).";
+      hint.textContent = "Listening… speak now (click 🗣️ to stop).";
     };
     recog.onend = () => {
       listening = false;
@@ -145,12 +195,13 @@
         if (event.results[i].isFinal) final += t; else interim += t;
       }
       if (final) baseText += final;
-      input.value = (baseText + interim).replace(/\s+/g, " ").trimStart();
+      const display = (baseText + interim).replace(/\s+/g, " ").trim();
+      input.value = collapseRepeats(display);
     };
   }
 
   // ---------------------------------------------------------------
-  // Boot up — receive args (speech language, placeholder) from Python
+  // Boot up — receive args (speech language, placeholder, label) from Python
   // ---------------------------------------------------------------
   window.addEventListener("message", (e) => {
     if (e.data && e.data.type === "streamlit:render") {
@@ -160,11 +211,12 @@
         if (recog) recog.lang = speechLang;
       }
       if (args.placeholder) input.placeholder = args.placeholder;
-      Streamlit.setHeight(78);
+      if (args.next_label) nextBtn.textContent = args.next_label;
+      Streamlit.setHeight(84);
     }
   });
   Streamlit.ready();
-  Streamlit.setHeight(78);
+  Streamlit.setHeight(84);
   setTimeout(() => input.focus(), 150);
 </script>
 </body>

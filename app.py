@@ -17,6 +17,7 @@ import asyncio
 import base64
 import json
 import os
+import re
 import uuid
 from datetime import datetime
 
@@ -58,7 +59,7 @@ LANGUAGES = {
         "speech_lang": "en-US",
         "intro": "Hi, I'm Sandra. I'll ask you {n} short questions. "
                  "Answer by typing or by speaking with the mic.",
-        "placeholder": "Type or click the mic to speak, then press Enter",
+        "placeholder": "Type or tap 🗣️ to speak, then press Enter or Next",
         "questions": [
             "What is your full name?",
             "What is your age?",
@@ -73,7 +74,7 @@ LANGUAGES = {
         "edge_voice": "hi-IN-SwaraNeural",   # free neural Hindi voice (edge-tts)
         "intro": "नमस्ते, मैं सैंड्रा हूँ। मैं आपसे {n} छोटे सवाल पूछूँगी। "
                  "आप टाइप करके या माइक से बोलकर जवाब दे सकते हैं।",
-        "placeholder": "टाइप करें या माइक पर क्लिक करके बोलें, फिर Enter दबाएँ",
+        "placeholder": "टाइप करें या 🗣️ दबाकर बोलें, फिर Enter या Next दबाएँ",
         "questions": [
             "आपका पूरा नाम क्या है?",
             "आपकी उम्र क्या है?",
@@ -263,6 +264,84 @@ def save_responses() -> str:
     return filepath
 
 
+def _basic_dedupe(text: str) -> str:
+    """Collapse immediately-repeated phrases as a lightweight, offline fallback.
+
+    Mirrors the client-side cleanup so a messy dictation like
+    "my name is my name is Amartya" becomes "my name is Amartya" even when
+    the AI refinement below is unavailable.
+    """
+    text = re.sub(r"\s+", " ", text or "").strip()
+    if not text:
+        return text
+
+    words = text.split(" ")
+    # Longest phrases first so larger repeats collapse before single words.
+    for n in range(6, 0, -1):
+        out: list[str] = []
+        i = 0
+        while i < len(words):
+            a = " ".join(words[i:i + n]).lower()
+            b = " ".join(words[i + n:i + 2 * n]).lower()
+            if a and a == b:
+                i += n            # drop this copy, keep the next one
+            else:
+                out.append(words[i])
+                i += 1
+        words = out
+    return " ".join(words)
+
+
+def refine_voice_answer(question: str, raw_answer: str, lang: dict) -> str:
+    """Turn a messy spoken answer into the concise answer the user intended.
+
+    Speech-to-text captures false starts and repeated phrases
+    ("My name is... my name is Amartya"). This asks Groq's LLM to extract just
+    the intended answer ("Amartya") in the same language, given the question
+    for context. Falls back to a light local cleanup if the API call fails.
+    """
+    cleaned = _basic_dedupe(raw_answer)
+    if not GROQ_API_KEY or not cleaned:
+        return cleaned
+
+    language_name = "Hindi" if lang.get("code") == "hi" else "English"
+    try:
+        client = Groq(api_key=GROQ_API_KEY)
+        completion = client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            temperature=0,
+            max_tokens=120,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You clean up answers captured by speech-to-text in a voice "
+                        "interview. The transcript may contain false starts, repeated "
+                        "phrases and filler. Return ONLY the answer the speaker intended "
+                        "— no quotes, labels, or explanation. Remove repetitions and "
+                        "drop lead-in phrases that merely restate the question "
+                        "(e.g. 'My name is... my name is Amartya' -> 'Amartya'; "
+                        "'I am twenty five years old' -> '25'). "
+                        f"Keep the answer in {language_name}. If it is already clean, "
+                        "return it unchanged. Never invent information."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Question: {question}\nSpoken answer: {cleaned}\nClean answer:"
+                    ),
+                },
+            ],
+        )
+        refined = (completion.choices[0].message.content or "").strip()
+        refined = refined.strip("\"'“”").strip()
+        return refined or cleaned
+    except Exception:
+        # Cleanup is best-effort; never block the flow if the call fails.
+        return cleaned
+
+
 def submit_answer(answer: str, input_method: str) -> None:
     """Record the answer for the current question and advance the flow."""
     if not answer:
@@ -271,6 +350,15 @@ def submit_answer(answer: str, input_method: str) -> None:
 
     questions = get_questions()
     question = questions[st.session_state.current_index]
+
+    # Voice answers go through AI cleanup so repeats/false starts are stripped
+    # and only the intended answer is stored.
+    if input_method == "voice":
+        answer = refine_voice_answer(question, answer, current_lang())
+        if not answer:
+            st.warning("Please provide an answer before submitting.")
+            return
+
     st.session_state.responses.append(
         {"question": question, "answer": answer, "input_method": input_method}
     )
@@ -379,6 +467,7 @@ else:
         key=f"answer_{idx}",
         lang=lang["speech_lang"],
         placeholder=lang["placeholder"],
+        next_label=("Finish ✓" if idx + 1 >= total else "Next →"),
         default=None,
     )
 
