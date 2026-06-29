@@ -1,0 +1,4 @@
+streamlit
+groq
+edge-tts
+python-dotenv

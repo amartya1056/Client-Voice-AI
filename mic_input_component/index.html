@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  html, body { margin: 0; padding: 0; }
+  body { font-family: "Source Sans Pro", -apple-system, sans-serif; }
+
+  .wrap { position: relative; width: 100%; box-sizing: border-box; }
+
+  #answer {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 0.6rem 3rem 0.6rem 0.85rem;   /* right padding leaves room for the mic */
+    font-size: 1rem;
+    color: #31333F;
+    border: 1px solid rgba(49, 51, 63, 0.2);
+    border-radius: 0.5rem;
+    background-color: #f0f2f6;
+    outline: none;
+    line-height: 1.4;
+  }
+  #answer:focus { border-color: #ff4b4b; box-shadow: 0 0 0 1px #ff4b4b; }
+
+  /* Mic button sits inside the right edge of the text box */
+  #mic {
+    position: absolute;
+    right: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 34px;
+    height: 34px;
+    border: none;
+    border-radius: 50%;
+    background: transparent;
+    cursor: pointer;
+    font-size: 18px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s;
+  }
+  #mic:hover { background: rgba(49, 51, 63, 0.08); }
+  #mic.listening {
+    background: #ff4b4b;
+    animation: pulse 1.2s infinite;
+  }
+  @keyframes pulse {
+    0%   { box-shadow: 0 0 0 0 rgba(255, 75, 75, 0.5); }
+    70%  { box-shadow: 0 0 0 8px rgba(255, 75, 75, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(255, 75, 75, 0); }
+  }
+
+  .hint { font-size: 0.78rem; color: #808495; margin-top: 5px; min-height: 1rem; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <input id="answer" type="text" autocomplete="off"
+           placeholder="Type or click the mic to speak, then press Enter" />
+    <button id="mic" title="Click to speak">&#127908;</button>
+  </div>
+  <div class="hint" id="hint"></div>
+
+<script>
+  // ---------------------------------------------------------------
+  // Minimal Streamlit component protocol (no npm build required).
+  // ---------------------------------------------------------------
+  function send(type, data) {
+    window.parent.postMessage(
+      Object.assign({ isStreamlitMessage: true, type: type }, data), "*"
+    );
+  }
+  const Streamlit = {
+    ready:     () => send("streamlit:componentReady", { apiVersion: 1 }),
+    setHeight: (h) => send("streamlit:setFrameHeight", { height: h }),
+    setValue:  (v) => send("streamlit:setComponentValue", { value: v, dataType: "json" }),
+  };
+
+  const input = document.getElementById("answer");
+  const mic   = document.getElementById("mic");
+  const hint  = document.getElementById("hint");
+
+  let submitCount = 0;   // increments on each Enter so repeat answers still register
+  let usedVoice   = false;
+  let speechLang  = "en-US";   // updated from Python via component args
+
+  // Press Enter -> send the answer to Python (which then submits to the AI).
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      const text = input.value.trim();
+      if (!text) return;
+      submitCount += 1;
+      Streamlit.setValue({
+        text: text,
+        count: submitCount,
+        method: usedVoice ? "voice" : "typed",
+      });
+    }
+  });
+
+  // ---------------------------------------------------------------
+  // Live dictation via the browser's Web Speech API (Chrome/Edge).
+  // Interim results stream into the box as you talk.
+  // ---------------------------------------------------------------
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  let recog = null;   // hoisted so the render handler can update its language
+
+  if (!SR) {
+    mic.style.display = "none";
+    hint.textContent = "Live voice needs Chrome or Edge. You can still type your answer.";
+  } else {
+    recog = new SR();
+    recog.continuous = true;
+    recog.interimResults = true;
+    recog.lang = speechLang;
+
+    let listening = false;
+    let baseText = "";   // text committed before the current interim chunk
+
+    mic.addEventListener("click", () => {
+      if (listening) { recog.stop(); return; }
+      baseText = input.value ? input.value.trim() + " " : "";
+      try { recog.start(); } catch (err) { /* ignore double-start */ }
+    });
+
+    recog.onstart = () => {
+      listening = true;
+      usedVoice = true;
+      mic.classList.add("listening");
+      hint.textContent = "Listening… speak now (click mic to stop).";
+    };
+    recog.onend = () => {
+      listening = false;
+      mic.classList.remove("listening");
+      if (hint.textContent.startsWith("Listening")) hint.textContent = "";
+    };
+    recog.onerror = (e) => { hint.textContent = "Mic error: " + e.error; };
+
+    recog.onresult = (event) => {
+      let interim = "", final = "";
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const t = event.results[i][0].transcript;
+        if (event.results[i].isFinal) final += t; else interim += t;
+      }
+      if (final) baseText += final;
+      input.value = (baseText + interim).replace(/\s+/g, " ").trimStart();
+    };
+  }
+
+  // ---------------------------------------------------------------
+  // Boot up — receive args (speech language, placeholder) from Python
+  // ---------------------------------------------------------------
+  window.addEventListener("message", (e) => {
+    if (e.data && e.data.type === "streamlit:render") {
+      const args = e.data.args || {};
+      if (args.lang) {
+        speechLang = args.lang;
+        if (recog) recog.lang = speechLang;
+      }
+      if (args.placeholder) input.placeholder = args.placeholder;
+      Streamlit.setHeight(78);
+    }
+  });
+  Streamlit.ready();
+  Streamlit.setHeight(78);
+  setTimeout(() => input.focus(), 150);
+</script>
+</body>
+</html>

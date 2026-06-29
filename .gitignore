@@ -1,0 +1,3 @@
+.env
+responses_*.json
+__pycache__/
