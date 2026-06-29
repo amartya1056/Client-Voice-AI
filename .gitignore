@@ -1,3 +1,14 @@
+# Secrets
 .env
+.streamlit/secrets.toml
+
+# Local virtual environment (do NOT deploy — platform-specific binaries)
+.venv/
+venv/
+
+# Generated session data
 responses_*.json
+
+# Python cache
 __pycache__/
+*.pyc

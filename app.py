@@ -31,7 +31,21 @@ from groq import Groq
 # --------------------------------------------------------------------------
 
 load_dotenv()
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+
+
+def _load_api_key() -> str | None:
+    """Read the Groq key from the environment (.env locally) or, when
+    deployed on Streamlit Community Cloud, from st.secrets."""
+    key = os.getenv("GROQ_API_KEY")
+    if key:
+        return key
+    try:
+        return st.secrets["GROQ_API_KEY"]
+    except Exception:
+        return None
+
+
+GROQ_API_KEY = _load_api_key()
 
 APP_NAME = "Sandra"
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -313,10 +327,18 @@ elif st.session_state.completed:
     full_data = {
         "session_id": st.session_state.session_id,
         "timestamp": datetime.now().isoformat(),
+        "language": st.session_state.lang,
         "responses": st.session_state.responses,
     }
     st.json(full_data)
-    st.caption(f"Saved to: {st.session_state.saved_path}")
+
+    # On cloud hosts the local file is ephemeral, so offer a download too.
+    st.download_button(
+        "⬇️ Download responses (JSON)",
+        data=json.dumps(full_data, indent=2, ensure_ascii=False),
+        file_name=os.path.basename(st.session_state.saved_path or "responses.json"),
+        mime="application/json",
+    )
 
     if st.button("Start New Session", type="primary"):
         reset_session()
