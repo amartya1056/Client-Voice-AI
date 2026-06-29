@@ -42,6 +42,7 @@
     align-items: center;
     justify-content: center;
     transition: background 0.15s;
+    z-index: 2;   /* stays clickable above the voice animation overlay */
   }
   #mic:hover { background: rgba(49, 51, 63, 0.08); }
   #mic.listening {
@@ -70,6 +71,37 @@
   #next:hover { background: #e63e3e; }
   #next:disabled { opacity: 0.45; cursor: default; }
 
+  /* Voice animation: replaces the text box with "speaking" sound-wave bars */
+  .viz {
+    display: none;                 /* shown only while listening */
+    position: absolute;
+    inset: 0;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    padding: 0 3rem 0 0.85rem;     /* matches the input's room for the mic */
+    box-sizing: border-box;
+    border: 1px solid #ff4b4b;
+    border-radius: 0.5rem;
+    background-color: #f0f2f6;
+    z-index: 1;
+  }
+  .wrap.recording #answer { visibility: hidden; }   /* hide the text while speaking */
+  .wrap.recording .viz    { display: flex; }
+
+  .viz span {
+    display: inline-block;
+    width: 4px;
+    height: 6px;
+    border-radius: 2px;
+    background: #ff4b4b;
+    animation: equalize 1s infinite ease-in-out;
+  }
+  @keyframes equalize {
+    0%, 100% { height: 6px; opacity: 0.6; }
+    50%      { height: 22px; opacity: 1; }
+  }
+
   .hint { font-size: 0.78rem; color: #808495; margin-top: 5px; min-height: 1rem; }
 </style>
 </head>
@@ -78,6 +110,17 @@
     <div class="wrap">
       <input id="answer" type="text" autocomplete="off"
              placeholder="Type or speak, then press Enter or Next" />
+      <div id="viz" class="viz" aria-hidden="true">
+        <span style="animation-delay:0s"></span>
+        <span style="animation-delay:.1s"></span>
+        <span style="animation-delay:.2s"></span>
+        <span style="animation-delay:.3s"></span>
+        <span style="animation-delay:.4s"></span>
+        <span style="animation-delay:.3s"></span>
+        <span style="animation-delay:.2s"></span>
+        <span style="animation-delay:.1s"></span>
+        <span style="animation-delay:0s"></span>
+      </div>
       <button id="mic" title="Click to speak">🗣️</button>
     </div>
     <button id="next" title="Submit this answer and go to the next question">Next →</button>
@@ -100,6 +143,7 @@
   };
 
   const input   = document.getElementById("answer");
+  const wrap    = document.querySelector(".wrap");
   const mic     = document.getElementById("mic");
   const nextBtn = document.getElementById("next");
   const hint    = document.getElementById("hint");
@@ -181,11 +225,13 @@
       listening = true;
       usedVoice = true;
       mic.classList.add("listening");
+      wrap.classList.add("recording");   // swap the text box for the voice animation
       hint.textContent = "Listening… speak now (click 🗣️ to stop).";
     };
     recog.onend = () => {
       listening = false;
       mic.classList.remove("listening");
+      wrap.classList.remove("recording");   // restore the text box (now holding the transcript)
       if (hint.textContent.startsWith("Listening")) hint.textContent = "";
     };
     recog.onerror = (e) => { hint.textContent = "Mic error: " + e.error; };
